@@ -9,6 +9,7 @@ import '@xyflow/react/dist/style.css';
 
 import { SimulationNodeData } from '@/types';
 import { PRESETS } from '@/data';
+import { COMPONENT_LABELS, COMPONENT_DEFAULTS } from '@/lib/services';
 
 import SimulationControls from '@/components/features/simulator/simulation-controls';
 import SimulatorHeader from './simulator-header';
@@ -91,6 +92,216 @@ export default function Simulator() {
       setRightTab('report');
     }
   }, [isRunning, setRightTab]);
+
+  // Helper function to find node by label
+  const findNodeByLabel = useCallback((label: string) => {
+    return nodes.find((n) => n.data.label === label);
+  }, [nodes]);
+
+  // Helper function to check if edge already exists
+  const edgeExists = useCallback((sourceId: string, targetId: string) => {
+    return edges.some((e) => e.source === sourceId && e.target === targetId);
+  }, [edges]);
+
+  // AQL Architecture Command Handlers
+  const handleAddComponent = useCallback((type: string, nodeId?: string, serviceId?: string, label?: string) => {
+    // Validate component type
+    const componentType = type as keyof typeof COMPONENT_LABELS;
+    if (!COMPONENT_LABELS[componentType]) {
+      return {
+        success: false,
+        message: `Invalid component type: ${type}`,
+      };
+    }
+
+    if (!label) {
+      label = COMPONENT_LABELS[componentType] || type;
+    }
+
+    // Validate duplicate label
+    const existingNode = findNodeByLabel(label);
+    if (existingNode) {
+      return {
+        success: false,
+        message: `Component "${label}" already exists`,
+      };
+    }
+
+    // Use label as the node ID
+    const newNode: Node<SimulationNodeData> = {
+      id: label,
+      type: 'infra',
+      position: { x: 250 + Math.random() * 200, y: 100 + nodes.length * 120 },
+      data: {
+        label: label,
+        componentType: componentType,
+        config: {
+          serviceId: serviceId || COMPONENT_DEFAULTS[componentType],
+          cacheHitRate: componentType === 'cache' ? 0.8 : undefined,
+          queueProcessingTimeMs: componentType === 'message_queue' ? 100 : undefined,
+        },
+      },
+    };
+    setNodes((nds) => [...nds, newNode]);
+    setTimeout(() => saveToHistory(), 50);
+    return {
+      success: true,
+      message: `Added ${componentType} as ${label}`,
+    };
+  }, [nodes.length, setNodes, saveToHistory, findNodeByLabel]);
+
+  const handleRemoveNode = useCallback((label: string) => {
+    const node = findNodeByLabel(label);
+    if (!node) {
+      return {
+        success: false,
+        message: `Component "${label}" not found`,
+      };
+    }
+    deleteNode(node.id);
+    return {
+      success: true,
+      message: `Removed ${label}`,
+    };
+  }, [deleteNode, findNodeByLabel]);
+
+  const handleConnectNodes = useCallback((sourceLabel: string, targetLabel: string, animated?: boolean) => {
+    const sourceNode = findNodeByLabel(sourceLabel);
+    const targetNode = findNodeByLabel(targetLabel);
+
+    if (!sourceNode) {
+      return {
+        success: false,
+        message: `Component "${sourceLabel}" not found`,
+      };
+    }
+
+    if (!targetNode) {
+      return {
+        success: false,
+        message: `Component "${targetLabel}" not found`,
+      };
+    }
+
+    // Check if edge already exists
+    if (edgeExists(sourceNode.id, targetNode.id)) {
+      return {
+        success: false,
+        message: `Connection already exists`,
+      };
+    }
+
+    // Deterministic edge ID based on source and target
+    const edgeId = `edge_${sourceNode.id}_${targetNode.id}`;
+    const newEdge: Edge = {
+      id: edgeId,
+      source: sourceNode.id,
+      target: targetNode.id,
+      animated: animated || false,
+      style: { stroke: '#94a3b8', strokeWidth: 2 },
+    };
+    setEdges((eds) => [...eds, newEdge]);
+    setTimeout(() => saveToHistory(), 50);
+    return {
+      success: true,
+      message: `Connected ${sourceLabel} to ${targetLabel}${animated ? ' (animated)' : ''}`,
+    };
+  }, [setEdges, saveToHistory, findNodeByLabel, edgeExists]);
+
+  const handleDisconnectNodes = useCallback((sourceLabel: string, targetLabel: string) => {
+    const sourceNode = findNodeByLabel(sourceLabel);
+    const targetNode = findNodeByLabel(targetLabel);
+
+    if (!sourceNode) {
+      return {
+        success: false,
+        message: `Component "${sourceLabel}" not found`,
+      };
+    }
+
+    if (!targetNode) {
+      return {
+        success: false,
+        message: `Component "${targetLabel}" not found`,
+      };
+    }
+
+    // Check if edge exists
+    if (!edgeExists(sourceNode.id, targetNode.id)) {
+      return {
+        success: false,
+        message: `Connection does not exist`,
+      };
+    }
+
+    setEdges((eds) => eds.filter((e) => !(e.source === sourceNode.id && e.target === targetNode.id)));
+    setTimeout(() => saveToHistory(), 50);
+    return {
+      success: true,
+      message: `Disconnected ${sourceLabel} from ${targetLabel}`,
+    };
+  }, [setEdges, saveToHistory, findNodeByLabel, edgeExists]);
+
+  const handleRenameNode = useCallback((oldLabel: string, newLabel: string) => {
+    const node = findNodeByLabel(oldLabel);
+    if (!node) {
+      return {
+        success: false,
+        message: `Component "${oldLabel}" not found`,
+      };
+    }
+
+    // Validate duplicate label
+    const existingNode = findNodeByLabel(newLabel);
+    if (existingNode) {
+      return {
+        success: false,
+        message: `Component "${newLabel}" already exists`,
+      };
+    }
+
+    // Update the node ID to match the new label and update the label in data
+    setNodes((nds) => nds.map((n) => {
+      if (n.id === node.id) {
+        return { ...n, id: newLabel, data: { ...n.data, label: newLabel } };
+      }
+      return n;
+    }));
+    // Update edges to use the new ID with deterministic edge IDs
+    setEdges((eds) => eds.map((e) => {
+      if (e.source === node.id) {
+        return { ...e, source: newLabel, id: `edge_${newLabel}_${e.target}` };
+      }
+      if (e.target === node.id) {
+        return { ...e, target: newLabel, id: `edge_${e.source}_${newLabel}` };
+      }
+      return e;
+    }));
+    setTimeout(() => saveToHistory(), 50);
+    return {
+      success: true,
+      message: `Renamed ${oldLabel} to ${newLabel}`,
+    };
+  }, [findNodeByLabel, setNodes, setEdges, saveToHistory]);
+
+  const handleShowNodes = useCallback(() => {
+    return nodes.map((n) => ({
+      label: n.data.label,
+      type: n.data.componentType,
+    }));
+  }, [nodes]);
+
+  const handleShowConnections = useCallback(() => {
+    return edges.map((e) => {
+      const sourceNode = nodes.find((n) => n.id === e.source);
+      const targetNode = nodes.find((n) => n.id === e.target);
+      return {
+        source: sourceNode?.data.label || e.source,
+        target: targetNode?.data.label || e.target,
+        animated: e.animated || false,
+      };
+    });
+  }, [edges, nodes]);
 
   // Custom Hooks - Selection & Events
   const selection = useSelection(nodes, reactFlowRef);
@@ -308,7 +519,16 @@ export default function Simulator() {
           
           {/* TERMINAL PANEL */}
           {isTerminalOpen && (
-            <TerminalPanel onClose={() => setIsTerminalOpen(false)} />
+            <TerminalPanel
+              onClose={() => setIsTerminalOpen(false)}
+              onAddComponent={handleAddComponent}
+              onRemoveNode={handleRemoveNode}
+              onConnectNodes={handleConnectNodes}
+              onDisconnectNodes={handleDisconnectNodes}
+              onRenameNode={handleRenameNode}
+              onShowNodes={handleShowNodes}
+              onShowConnections={handleShowConnections}
+            />
           )}
         </div>
 

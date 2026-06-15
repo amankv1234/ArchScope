@@ -1,8 +1,23 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { X, Terminal, Trash2 } from 'lucide-react';
+import { COMPONENT_LABELS } from '@/lib/services';
+
+type ComponentType = keyof typeof COMPONENT_LABELS;
+
+type CommandResult = {
+  success: boolean;
+  message: string;
+};
 
 interface TerminalPanelProps {
   onClose: () => void;
+  onAddComponent?: (type: string, nodeId?: string, serviceId?: string, label?: string) => CommandResult;
+  onRemoveNode?: (label: string) => CommandResult;
+  onConnectNodes?: (sourceLabel: string, targetLabel: string, animated?: boolean) => CommandResult;
+  onDisconnectNodes?: (sourceLabel: string, targetLabel: string) => CommandResult;
+  onRenameNode?: (oldLabel: string, newLabel: string) => CommandResult;
+  onShowNodes?: () => { label: string; type: string }[];
+  onShowConnections?: () => { source: string; target: string; animated: boolean }[];
 }
 
 interface LogEntry {
@@ -10,7 +25,7 @@ interface LogEntry {
   content: string;
 }
 
-export default function TerminalPanel({ onClose }: TerminalPanelProps) {
+export default function TerminalPanel({ onClose, onAddComponent, onRemoveNode, onConnectNodes, onDisconnectNodes, onRenameNode, onShowNodes, onShowConnections }: TerminalPanelProps) {
   const [input, setInput] = useState('');
   const [logs, setLogs] = useState<LogEntry[]>([
     { type: 'response', content: 'ArchScope Query Language (AQL) Terminal v1.0.0' },
@@ -18,6 +33,8 @@ export default function TerminalPanel({ onClose }: TerminalPanelProps) {
   ]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [shouldFocusInput, setShouldFocusInput] = useState(false);
+  const [commandHistory, setCommandHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
   const endOfLogRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -34,20 +51,317 @@ export default function TerminalPanel({ onClose }: TerminalPanelProps) {
     }
   }, [shouldFocusInput, isProcessing]);
 
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // Handle ArrowUp - navigate back in history
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (commandHistory.length === 0) return;
+      
+      const newIndex = historyIndex === -1 ? commandHistory.length - 1 : historyIndex - 1;
+      if (newIndex >= 0) {
+        setHistoryIndex(newIndex);
+        setInput(commandHistory[newIndex]);
+      }
+    }
+    
+    // Handle ArrowDown - navigate forward in history
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (historyIndex === -1) return;
+      
+      const newIndex = historyIndex + 1;
+      if (newIndex < commandHistory.length) {
+        setHistoryIndex(newIndex);
+        setInput(commandHistory[newIndex]);
+      } else {
+        // Reached the end, clear input
+        setHistoryIndex(-1);
+        setInput('');
+      }
+    }
+  };
+
   const handleCommand = async (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && input.trim()) {
       const rawCommand = input.trim();
       const normalizedCommand = rawCommand.toLowerCase();
+      const parts = rawCommand.split(/\s+/);
+      
+      // Add command to history (avoid duplicates)
+      if (rawCommand !== commandHistory[commandHistory.length - 1]) {
+        setCommandHistory((prev) => [...prev, rawCommand]);
+      }
+      setHistoryIndex(-1);
+      
       setInput('');
       setLogs((prev) => [...prev, { type: 'command', content: rawCommand }]);
 
-      // Handle clear command locally (use normalized command for matching)
+      // Handle clear command locally
       if (normalizedCommand === 'clear') {
         setLogs([]);
         setShouldFocusInput(true);
         return;
       }
 
+      // Handle help command locally
+      if (normalizedCommand === 'help') {
+        setLogs((prev) => [
+          ...prev,
+          { type: 'response', content: 'Available commands:' },
+          { type: 'response', content: '  add <type> as <name>' },
+          { type: 'response', content: '  remove <name>' },
+          { type: 'response', content: '  connect <source> to <target> [animated]' },
+          { type: 'response', content: '  disconnect <source> from <target>' },
+          { type: 'response', content: '  rename <name> to <new_name>' },
+          { type: 'response', content: '  show_nodes - List all nodes' },
+          { type: 'response', content: '  show_connections - List all connections' },
+          { type: 'response', content: '  clear - Clear terminal' },
+          { type: 'response', content: '  help - Show this help' },
+        ]);
+        setShouldFocusInput(true);
+        return;
+      }
+
+      // Handle show_nodes command locally
+      if (normalizedCommand === 'show_nodes') {
+        if (onShowNodes) {
+          const nodes = onShowNodes();
+          if (nodes.length === 0) {
+            setLogs((prev) => [...prev, { type: 'response', content: 'No nodes in the architecture' }]);
+          } else {
+            const nodeEntries = nodes.map((node) => ({
+              type: 'response' as const,
+              content: `  ${node.label} (${node.type})`,
+            }));
+            setLogs((prev) => [
+              ...prev,
+              { type: 'response', content: 'Nodes in architecture:' },
+              ...nodeEntries,
+            ]);
+          }
+        } else {
+          setLogs((prev) => [...prev, { type: 'error', content: 'Error: Unable to list nodes' }]);
+        }
+        setShouldFocusInput(true);
+        return;
+      }
+
+      // Handle show_connections command locally
+      if (normalizedCommand === 'show_connections') {
+        if (onShowConnections) {
+          const connections = onShowConnections();
+          if (connections.length === 0) {
+            setLogs((prev) => [...prev, { type: 'response', content: 'No connections in the architecture' }]);
+          } else {
+            const connectionEntries = connections.map((conn) => ({
+              type: 'response' as const,
+              content: `  ${conn.source} -> ${conn.target}${conn.animated ? ' (animated)' : ''}`,
+            }));
+            setLogs((prev) => [
+              ...prev,
+              { type: 'response', content: 'Connections in architecture:' },
+              ...connectionEntries,
+            ]);
+          }
+        } else {
+          setLogs((prev) => [...prev, { type: 'error', content: 'Error: Unable to list connections' }]);
+        }
+        setShouldFocusInput(true);
+        return;
+      }
+
+      const command = parts[0].toLowerCase();
+      const hasHelpFlag = parts.includes('--help') || parts.includes('-h');
+
+      // Handle --help flag for commands
+      if (hasHelpFlag) {
+        if (command === 'add') {
+          setLogs((prev) => [
+            ...prev,
+            { type: 'response', content: 'Available component types:' },
+            { type: 'response', content: '  client - Represents end users or external clients' },
+            { type: 'response', content: '  load_balancer - Distributes traffic across multiple instances' },
+            { type: 'response', content: '  api_server - Handles API requests and business logic' },
+            { type: 'response', content: '  cache - Stores frequently accessed data for faster retrieval' },
+            { type: 'response', content: '  database - Stores and manages persistent data' },
+            { type: 'response', content: '  message_queue - Asynchronous message processing system' },
+            { type: 'response', content: '  worker - Background job processor' },
+            { type: 'response', content: '  notification_service - Sends notifications (push, email, etc.)' },
+            { type: 'response', content: '  rate_limiter - Controls request rate to protect downstream services' },
+            { type: 'response', content: '' },
+            { type: 'response', content: 'Usage: add <component_type> as <name>' },
+          ]);
+        } else if (command === 'remove') {
+          setLogs((prev) => [
+            ...prev,
+            { type: 'response', content: 'Removes a node and all its connected edges from the architecture.' },
+            { type: 'response', content: 'Usage: remove <name>' },
+            { type: 'response', content: 'Example: remove api1' },
+          ]);
+        } else if (command === 'connect') {
+          setLogs((prev) => [
+            ...prev,
+            { type: 'response', content: 'Creates a directed edge from one node to another.' },
+            { type: 'response', content: 'Usage: connect <source> to <target> [animated]' },
+            { type: 'response', content: 'Example: connect api1 to db animated' },
+          ]);
+        } else if (command === 'disconnect') {
+          setLogs((prev) => [
+            ...prev,
+            { type: 'response', content: 'Removes the edge between two nodes.' },
+            { type: 'response', content: 'Usage: disconnect <source> from <target>' },
+            { type: 'response', content: 'Example: disconnect api1 from db' },
+          ]);
+        } else if (command === 'rename') {
+          setLogs((prev) => [
+            ...prev,
+            { type: 'response', content: 'Changes the display label of a node.' },
+            { type: 'response', content: 'Usage: rename <name> to <new_name>' },
+            { type: 'response', content: 'Example: rename api1 to auth_api' },
+          ]);
+        } else {
+          setLogs((prev) => [
+            ...prev,
+            { type: 'response', content: `Unknown command: ${command}` },
+            { type: 'response', content: 'Type "help" for available commands' },
+          ]);
+        }
+        setShouldFocusInput(true);
+        return;
+      }
+
+      // add <component_type> as <name>
+      if (command === 'add') {
+        const componentType = parts[1];
+        if (!componentType) {
+          setLogs((prev) => [...prev, { type: 'error', content: 'Error: component_type is required for add command' }]);
+          setShouldFocusInput(true);
+          return;
+        }
+
+        const asIndex = parts.findIndex(p => p.toLowerCase() === 'as');
+        const name = asIndex !== -1 ? parts[asIndex + 1] : undefined;
+
+        if (!name) {
+          setLogs((prev) => [...prev, { type: 'error', content: 'Error: name is required for add command' }]);
+          setShouldFocusInput(true);
+          return;
+        }
+
+        if (onAddComponent) {
+          const result = onAddComponent(componentType, undefined, undefined, name);
+          setLogs((prev) => [
+            ...prev,
+            { type: result.success ? 'response' : 'error', content: result.message },
+          ]);
+        } else {
+          setLogs((prev) => [...prev, { type: 'error', content: 'Error: Architecture commands not available' }]);
+        }
+        setShouldFocusInput(true);
+        return;
+      }
+
+      // remove <name>
+      if (command === 'remove') {
+        const name = parts[1];
+        if (!name) {
+          setLogs((prev) => [...prev, { type: 'error', content: 'Error: name is required for remove command' }]);
+          setShouldFocusInput(true);
+          return;
+        }
+
+        if (onRemoveNode) {
+          const result = onRemoveNode(name);
+          setLogs((prev) => [
+            ...prev,
+            { type: result.success ? 'response' : 'error', content: result.message },
+          ]);
+        } else {
+          setLogs((prev) => [...prev, { type: 'error', content: 'Error: Architecture commands not available' }]);
+        }
+        setShouldFocusInput(true);
+        return;
+      }
+
+      // connect <source> to <target> [animated]
+      if (command === 'connect') {
+        const source = parts[1];
+        const targetIndex = parts.findIndex(p => p.toLowerCase() === 'to');
+        const target = targetIndex !== -1 ? parts[targetIndex + 1] : undefined;
+        const animatedIndex = parts.findIndex(p => p.toLowerCase() === 'animated');
+
+        if (!source || !target) {
+          setLogs((prev) => [...prev, { type: 'error', content: 'Error: source and target are required for connect command' }]);
+          setShouldFocusInput(true);
+          return;
+        }
+
+        const animated = animatedIndex !== -1;
+
+        if (onConnectNodes) {
+          const result = onConnectNodes(source, target, animated);
+          setLogs((prev) => [
+            ...prev,
+            { type: result.success ? 'response' : 'error', content: result.message },
+          ]);
+        } else {
+          setLogs((prev) => [...prev, { type: 'error', content: 'Error: Architecture commands not available' }]);
+        }
+        setShouldFocusInput(true);
+        return;
+      }
+
+      // disconnect <source> from <target>
+      if (command === 'disconnect') {
+        const source = parts[1];
+        const targetIndex = parts.findIndex(p => p.toLowerCase() === 'from');
+        const target = targetIndex !== -1 ? parts[targetIndex + 1] : undefined;
+
+        if (!source || !target) {
+          setLogs((prev) => [...prev, { type: 'error', content: 'Error: source and target are required for disconnect command' }]);
+          setShouldFocusInput(true);
+          return;
+        }
+
+        if (onDisconnectNodes) {
+          const result = onDisconnectNodes(source, target);
+          setLogs((prev) => [
+            ...prev,
+            { type: result.success ? 'response' : 'error', content: result.message },
+          ]);
+        } else {
+          setLogs((prev) => [...prev, { type: 'error', content: 'Error: Architecture commands not available' }]);
+        }
+        setShouldFocusInput(true);
+        return;
+      }
+
+      // rename <name> to <new_name>
+      if (command === 'rename') {
+        const oldName = parts[1];
+        const targetIndex = parts.findIndex(p => p.toLowerCase() === 'to');
+        const newName = targetIndex !== -1 ? parts[targetIndex + 1] : undefined;
+
+        if (!oldName || !newName) {
+          setLogs((prev) => [...prev, { type: 'error', content: 'Error: old name and new name are required for rename command' }]);
+          setShouldFocusInput(true);
+          return;
+        }
+
+        if (onRenameNode) {
+          const result = onRenameNode(oldName, newName);
+          setLogs((prev) => [
+            ...prev,
+            { type: result.success ? 'response' : 'error', content: result.message },
+          ]);
+        } else {
+          setLogs((prev) => [...prev, { type: 'error', content: 'Error: Architecture commands not available' }]);
+        }
+        setShouldFocusInput(true);
+        return;
+      }
+
+      // For other commands, send to API
       setIsProcessing(true);
 
       try {
@@ -125,7 +439,10 @@ export default function TerminalPanel({ onClose }: TerminalPanelProps) {
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleCommand}
+            onKeyDown={(e) => {
+              handleKeyDown(e);
+              handleCommand(e);
+            }}
             disabled={isProcessing}
             className="flex-1 bg-transparent outline-none text-gray-900 disabled:opacity-50"
             autoFocus
