@@ -7,6 +7,8 @@ type ComponentType = keyof typeof COMPONENT_LABELS;
 type CommandResult = {
   success: boolean;
   message: string;
+  pendingConfirmation?: boolean;
+  confirmationPrompt?: string;
 };
 
 interface TerminalPanelProps {
@@ -18,10 +20,10 @@ interface TerminalPanelProps {
   onRenameNode?: (oldLabel: string, newLabel: string) => CommandResult;
   onShowNodes?: () => { label: string; type: string }[];
   onShowConnections?: () => { source: string; target: string; animated: boolean }[];
-  onSetConfig?: (command: string) => CommandResult;
-  onMultiConfig?: (command: string) => CommandResult;
-  onResetConfig?: (command: string) => CommandResult;
-  onAQLCommand?: (command: string) => CommandResult;
+  onSetConfig?: (command: string) => Promise<CommandResult>;
+  onMultiConfig?: (command: string) => Promise<CommandResult>;
+  onResetConfig?: (command: string) => Promise<CommandResult>;
+  onAQLCommand?: (command: string) => Promise<CommandResult>;
   height?: number;
 }
 
@@ -40,6 +42,7 @@ export default function TerminalPanel({ onClose, onAddComponent, onRemoveNode, o
   const [shouldFocusInput, setShouldFocusInput] = useState(false);
   const [commandHistory, setCommandHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
+  const [pendingDeleteConfirmation, setPendingDeleteConfirmation] = useState<string | null>(null);
   const endOfLogRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -91,15 +94,58 @@ export default function TerminalPanel({ onClose, onAddComponent, onRemoveNode, o
       const rawCommand = input.trim();
       const normalizedCommand = rawCommand.toLowerCase();
       const parts = rawCommand.split(/\s+/);
-      
+
+      // Handle delete confirmation - only accept confirmation, reject other commands
+      if (pendingDeleteConfirmation) {
+        const confirmation = input.trim().toLowerCase();
+        console.log('Delete confirmation triggered:', confirmation, 'for preset:', pendingDeleteConfirmation);
+        // Add to logs for confirmation response
+        setLogs((prev) => [...prev, { type: 'command', content: rawCommand }]);
+        setInput('');
+
+        if (confirmation === 'y' || confirmation === 'yes') {
+          // User confirmed, execute delete with confirmation flag
+          if (onAQLCommand) {
+            const result = await onAQLCommand(`delete_preset ${pendingDeleteConfirmation}`);
+            const logType = result.success ? 'response' : 'error';
+            setLogs((prev) => [...prev, { type: logType, content: result.message }]);
+          }
+        } else {
+          // User cancelled (any input other than y/yes cancels)
+          setLogs((prev) => [...prev, { type: 'response', content: 'Deletion cancelled' }]);
+        }
+        setPendingDeleteConfirmation(null);
+        setShouldFocusInput(true);
+        return;
+      }
+
       // Add command to history (avoid duplicates)
       if (rawCommand !== commandHistory[commandHistory.length - 1]) {
         setCommandHistory((prev) => [...prev, rawCommand]);
       }
       setHistoryIndex(-1);
-      
+
       setInput('');
       setLogs((prev) => [...prev, { type: 'command', content: rawCommand }]);
+
+      // Handle delete confirmation
+      if (pendingDeleteConfirmation) {
+        const confirmation = input.trim().toLowerCase();
+        if (confirmation === 'y' || confirmation === 'yes') {
+          // User confirmed, execute delete with confirmation flag
+          if (onAQLCommand) {
+            const result = await onAQLCommand(`delete_preset ${pendingDeleteConfirmation}`);
+            const logType = result.success ? 'response' : 'error';
+            setLogs((prev) => [...prev, { type: logType, content: result.message }]);
+          }
+        } else {
+          // User cancelled
+          setLogs((prev) => [...prev, { type: 'response', content: 'Deletion cancelled' }]);
+        }
+        setPendingDeleteConfirmation(null);
+        setShouldFocusInput(true);
+        return;
+      }
 
       // Handle clear command locally
       if (normalizedCommand === 'clear') {
@@ -114,7 +160,7 @@ export default function TerminalPanel({ onClose, onAddComponent, onRemoveNode, o
           ...prev,
           { type: 'response', content: 'Available commands:' },
           { type: 'response', content: 'Architecture:' },
-          { type: 'response', content: '  add <type> as <name>' },
+          { type: 'response', content: '  add <type> as <name> [using <service_id>]' },
           { type: 'response', content: '  remove <name>' },
           { type: 'response', content: '  connect <source> to <target> [animated]' },
           { type: 'response', content: '  disconnect <source> from <target>' },
@@ -135,6 +181,12 @@ export default function TerminalPanel({ onClose, onAddComponent, onRemoveNode, o
           { type: 'response', content: '  show_sim [status|config]' },
           { type: 'response', content: '  show_metrics [latency|throughput|errors]' },
           { type: 'response', content: '  show_bottlenecks' },
+          { type: 'response', content: '  show_services [component_type] - List available cloud services' },
+          { type: 'response', content: 'Preset:' },
+          { type: 'response', content: '  load_preset <preset_name>' },
+          { type: 'response', content: '  save_preset <preset_name> [as "<description>"]' },
+          { type: 'response', content: '  delete_preset <preset_name>' },
+          { type: 'response', content: '  list_preset' },
           { type: 'response', content: 'Other:' },
           { type: 'response', content: '  clear - Clear terminal' },
           { type: 'response', content: '  help - Show this help' },
@@ -194,6 +246,32 @@ export default function TerminalPanel({ onClose, onAddComponent, onRemoveNode, o
       const command = parts[0].toLowerCase();
       const hasHelpFlag = parts.includes('--help') || parts.includes('-h');
 
+      // Handle list_preset command locally
+      if (command === 'list_preset') {
+        if (onAQLCommand) {
+          const result = await onAQLCommand(input);
+          const logType = result.success ? 'response' : 'error';
+          setLogs((prev) => [...prev, { type: logType, content: result.message }]);
+        } else {
+          setLogs((prev) => [...prev, { type: 'error', content: 'Error: Unable to list presets' }]);
+        }
+        setShouldFocusInput(true);
+        return;
+      }
+
+      // Handle show_services command
+      if (command === 'show_services') {
+        if (onAQLCommand) {
+          const result = await onAQLCommand(input);
+          const logType = result.success ? 'response' : 'error';
+          setLogs((prev) => [...prev, { type: logType, content: result.message }]);
+        } else {
+          setLogs((prev) => [...prev, { type: 'error', content: 'Error: Unable to show services' }]);
+        }
+        setShouldFocusInput(true);
+        return;
+      }
+
       // Handle --help flag for commands
       if (hasHelpFlag) {
         if (command === 'add') {
@@ -210,7 +288,22 @@ export default function TerminalPanel({ onClose, onAddComponent, onRemoveNode, o
             { type: 'response', content: '  notification_service - Sends notifications (push, email, etc.)' },
             { type: 'response', content: '  rate_limiter - Controls request rate to protect downstream services' },
             { type: 'response', content: '' },
-            { type: 'response', content: 'Usage: add <component_type> as <name>' },
+            { type: 'response', content: 'Usage: add <component_type> as <name> [using <service_id>]' },
+            { type: 'response', content: '' },
+            { type: 'response', content: 'To see available services, use: show_services [component_type]' },
+          ]);
+        } else if (command === 'show_services') {
+          setLogs((prev) => [
+            ...prev,
+            { type: 'response', content: 'Lists available cloud services from the service catalog.' },
+            { type: 'response', content: 'Usage: show_services [component_type]' },
+            { type: 'response', content: '' },
+            { type: 'response', content: 'Examples:' },
+            { type: 'response', content: '  show_services - Show all available services' },
+            { type: 'response', content: '  show_services api_server - Show only API server services' },
+            { type: 'response', content: '' },
+            { type: 'response', content: 'Use the service_id with the add command:' },
+            { type: 'response', content: '  add api_server as api1 using ec2_c5_xlarge' },
           ]);
         } else if (command === 'remove') {
           setLogs((prev) => [
@@ -239,6 +332,34 @@ export default function TerminalPanel({ onClose, onAddComponent, onRemoveNode, o
             { type: 'response', content: 'Changes the display label of a node.' },
             { type: 'response', content: 'Usage: rename <name> to <new_name>' },
             { type: 'response', content: 'Example: rename api1 to auth_api' },
+          ]);
+        } else if (command === 'load_preset') {
+          setLogs((prev) => [
+            ...prev,
+            { type: 'response', content: 'Loads a saved architecture preset and replaces the current architecture.' },
+            { type: 'response', content: 'Usage: load_preset <preset_name>' },
+            { type: 'response', content: 'Example: load_preset demo' },
+          ]);
+        } else if (command === 'save_preset') {
+          setLogs((prev) => [
+            ...prev,
+            { type: 'response', content: 'Saves the current architecture as a new preset.' },
+            { type: 'response', content: 'Usage: save_preset <preset_name> [as "<description>"]' },
+            { type: 'response', content: 'Example: save_preset my_api as "My custom API architecture"' },
+          ]);
+        } else if (command === 'delete_preset') {
+          setLogs((prev) => [
+            ...prev,
+            { type: 'response', content: 'Deletes a user-created preset with confirmation.' },
+            { type: 'response', content: 'Usage: delete_preset <preset_name>' },
+            { type: 'response', content: 'Example: delete_preset my_api' },
+            { type: 'response', content: 'Note: Built-in presets cannot be deleted' },
+          ]);
+        } else if (command === 'list_preset') {
+          setLogs((prev) => [
+            ...prev,
+            { type: 'response', content: 'Lists all available presets with detailed information.' },
+            { type: 'response', content: 'Usage: list_preset' },
           ]);
         } else if (command === 'set') {
           setLogs((prev) => [
@@ -411,7 +532,7 @@ export default function TerminalPanel({ onClose, onAddComponent, onRemoveNode, o
         return;
       }
 
-      // add <component_type> as <name>
+      // add <component_type> as <name> [using <service_id>]
       if (command === 'add') {
         const componentType = parts[1];
         if (!componentType) {
@@ -429,8 +550,12 @@ export default function TerminalPanel({ onClose, onAddComponent, onRemoveNode, o
           return;
         }
 
+        // Parse optional "using <service_id>" clause
+        const usingIndex = parts.findIndex(p => p.toLowerCase() === 'using');
+        const serviceId = usingIndex !== -1 ? parts[usingIndex + 1] : undefined;
+
         if (onAddComponent) {
-          const result = onAddComponent(componentType, undefined, undefined, name);
+          const result = onAddComponent(componentType, undefined, serviceId, name);
           setLogs((prev) => [
             ...prev,
             { type: result.success ? 'response' : 'error', content: result.message },
@@ -545,7 +670,7 @@ export default function TerminalPanel({ onClose, onAddComponent, onRemoveNode, o
       // set <node_id> <property> = <value>
       if (command === 'set') {
         if (onSetConfig) {
-          const result = onSetConfig(rawCommand);
+          const result = await onSetConfig(rawCommand);
           setLogs((prev) => [
             ...prev,
             { type: result.success ? 'response' : 'error', content: result.message },
@@ -560,7 +685,7 @@ export default function TerminalPanel({ onClose, onAddComponent, onRemoveNode, o
       // config <node_id> { <property>: <value>, ... }
       if (command === 'config') {
         if (onMultiConfig) {
-          const result = onMultiConfig(rawCommand);
+          const result = await onMultiConfig(rawCommand);
           setLogs((prev) => [
             ...prev,
             { type: result.success ? 'response' : 'error', content: result.message },
@@ -575,7 +700,7 @@ export default function TerminalPanel({ onClose, onAddComponent, onRemoveNode, o
       // reset config <node_id>
       if (command === 'reset' && parts[1]?.toLowerCase() === 'config') {
         if (onResetConfig) {
-          const result = onResetConfig(rawCommand);
+          const result = await onResetConfig(rawCommand);
           setLogs((prev) => [
             ...prev,
             { type: result.success ? 'response' : 'error', content: result.message },
@@ -590,13 +715,38 @@ export default function TerminalPanel({ onClose, onAddComponent, onRemoveNode, o
       // Handle simulation commands locally
       if (command.startsWith('sim_') || command === 'show_sim' || command === 'show_metrics' || command === 'show_bottlenecks') {
         if (onAQLCommand) {
-          const result = onAQLCommand(rawCommand);
+          const result = await onAQLCommand(rawCommand);
           setLogs((prev) => [
             ...prev,
             { type: result.success ? 'response' : 'error', content: result.message },
           ]);
         } else {
           setLogs((prev) => [...prev, { type: 'error', content: 'Error: Simulation commands not available' }]);
+        }
+        setShouldFocusInput(true);
+        return;
+      }
+
+      // Handle preset commands locally
+      if (command === 'load_preset' || command === 'save_preset' || command === 'delete_preset') {
+        if (onAQLCommand) {
+          const result = await onAQLCommand(rawCommand);
+          
+          // Check if this is a delete confirmation request
+          if (result.pendingConfirmation && result.confirmationPrompt) {
+            // Extract preset name from confirmation prompt
+            const presetName = result.confirmationPrompt.replace('delete_preset ', '');
+            console.log('Setting pendingDeleteConfirmation to:', presetName);
+            setPendingDeleteConfirmation(presetName);
+            setLogs((prev) => [...prev, { type: 'response', content: result.message }]);
+          } else {
+            setLogs((prev) => [
+              ...prev,
+              { type: result.success ? 'response' : 'error', content: result.message },
+            ]);
+          }
+        } else {
+          setLogs((prev) => [...prev, { type: 'error', content: 'Error: Preset commands not available' }]);
         }
         setShouldFocusInput(true);
         return;
@@ -676,19 +826,37 @@ export default function TerminalPanel({ onClose, onAddComponent, onRemoveNode, o
           <div className="text-gray-500 animate-pulse">Processing...</div>
         )}
 
+        {pendingDeleteConfirmation && (
+          <div className="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded text-sm text-yellow-800">
+            ⚠️ Confirm deletion: Type <span className="font-semibold">Y</span> to confirm or any other key to cancel
+          </div>
+        )}
+
         <div className="flex gap-2 items-center mt-1">
           <span className="text-green-600 shrink-0">{'>'}</span>
           <input
             ref={inputRef}
             type="text"
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              // When waiting for confirmation, only allow single character input
+              if (pendingDeleteConfirmation) {
+                const value = e.target.value.trim();
+                if (value.length > 1) {
+                  return;
+                }
+                setInput(value);
+              } else {
+                setInput(e.target.value);
+              }
+            }}
             onKeyDown={(e) => {
               handleKeyDown(e);
               handleCommand(e);
             }}
             disabled={isProcessing}
-            className="flex-1 bg-transparent outline-none text-gray-900 disabled:opacity-50"
+            placeholder={pendingDeleteConfirmation ? 'Type Y to confirm...' : ''}
+            className="flex-1 bg-transparent outline-none text-gray-900 disabled:opacity-50 placeholder:text-gray-400"
             autoFocus
             autoComplete="off"
             spellCheck="false"
