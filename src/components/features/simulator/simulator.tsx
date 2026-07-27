@@ -387,7 +387,11 @@ export default function Simulator() {
 
   // General AQL Command Handler (for simulation commands and others)
   const handleAQLCommand = useCallback(async (command: string) => {
-    const parsed = parseAQLCommand(command);
+    const isDeleteConfirmed = command.includes('--confirm');
+    const cleanCommand = command.replace('--confirm', '').trim();
+    
+    // Parse the AQL command
+    const parsed = parseAQLCommand(cleanCommand);
     if (parsed.type === 'unknown') {
       return {
         success: false,
@@ -419,6 +423,7 @@ if (command.trim() === 'fit_view') {
     message: 'Canvas fitted to view',
   };
 }
+
     // Get token from localStorage
     const token = typeof window !== 'undefined' ? localStorage.getItem('token') || undefined : undefined;
 
@@ -447,7 +452,7 @@ if (command.trim() === 'fit_view') {
       stopSimulation,
       handleReset,
       handleSimulationComplete,
-      undefined,
+      isDeleteConfirmed, // deleteConfirmed
       token,
       setCurrentDesignName
     );
